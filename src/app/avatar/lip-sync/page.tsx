@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Upload,
   Sparkles,
@@ -24,8 +25,9 @@ export default function LipSyncPage() {
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioPreview, setAudioPreview] = useState<string | null>(null);
   const [textForTts, setTextForTts] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'waiting' || result.state === 'queuing' || result.state === 'generating';
 
   const handleVideoDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -33,16 +35,18 @@ export default function LipSyncPage() {
     if (file && file.type.startsWith('video/')) {
       setVideoFile(file);
       setVideoPreview(URL.createObjectURL(file));
+      reset();
     }
-  }, []);
+  }, [reset]);
 
   const handleVideoSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setVideoFile(file);
       setVideoPreview(URL.createObjectURL(file));
+      reset();
     }
-  }, []);
+  }, [reset]);
 
   const handleAudioDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -50,25 +54,63 @@ export default function LipSyncPage() {
     if (file && file.type.startsWith('audio/')) {
       setAudioFile(file);
       setAudioPreview(URL.createObjectURL(file));
+      reset();
     }
-  }, []);
+  }, [reset]);
 
   const handleAudioSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setAudioFile(file);
       setAudioPreview(URL.createObjectURL(file));
+      reset();
     }
-  }, []);
+  }, [reset]);
 
   const canGenerate = videoFile && (audioTab === 'audio' ? audioFile : textForTts.trim());
 
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    return data.url;
+  };
+
   const handleGenerate = async () => {
-    if (!canGenerate) return;
-    setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setResult('generated');
-    setIsGenerating(false);
+    if (!canGenerate || !videoFile) return;
+
+    // 1. Upload video
+    const imageUrl = await uploadFile(videoFile);
+    if (!imageUrl) return;
+
+    // 2. Get audio URL
+    let audioUrl: string;
+    if (audioTab === 'audio' && audioFile) {
+      audioUrl = await uploadFile(audioFile);
+      if (!audioUrl) return;
+    } else {
+      // Generate TTS audio first, then use that URL
+      const ttsRes = await fetch('/api/generate/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: textForTts, voice: 'female-tr' }),
+      });
+      const ttsData = await ttsRes.json();
+      if (!ttsData.success || !ttsData.url) return;
+      audioUrl = ttsData.url;
+    }
+
+    // 3. Start lip-sync generation
+    start({
+      endpoint: '/api/generate/avatar',
+      body: {
+        type: 'lip-sync',
+        image_url: imageUrl,
+        audio_url: audioUrl,
+      },
+      taskType: 'market',
+    });
   };
 
   return (
@@ -103,6 +145,7 @@ export default function LipSyncPage() {
                         onClick={() => {
                           setVideoFile(null);
                           setVideoPreview(null);
+                          reset();
                         }}
                         className="absolute top-6 right-6 p-1.5 bg-black/60 rounded-full text-white hover:bg-black/80 transition-colors text-xs"
                       >
@@ -173,6 +216,7 @@ export default function LipSyncPage() {
                             onClick={() => {
                               setAudioFile(null);
                               setAudioPreview(null);
+                              reset();
                             }}
                             className="p-1.5 bg-black/60 rounded-full text-white hover:bg-black/80 transition-colors text-xs"
                           >
@@ -233,10 +277,16 @@ export default function LipSyncPage() {
                     <Sparkles className="w-4 h-4 text-purple-400" />
                     Sonuç
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
+                    </span>
+                  )}
+                  {result.state === 'fail' && (
+                    <span className="text-xs text-red-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                      Hata
                     </span>
                   )}
                 </div>
@@ -252,23 +302,16 @@ export default function LipSyncPage() {
                         <p className="text-xs text-gray-600 mt-1">Yüz ifadeleri analiz ediliyor...</p>
                       </div>
                     </div>
-                  ) : result ? (
-                    <div className="w-full h-full bg-gradient-to-br from-purple-500/20 via-[#141414] to-[#00FF88]/10 flex items-center justify-center">
-                      <div className="text-center">
-                        <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mx-auto mb-3">
-                          <Video className="w-8 h-8 text-white" />
-                        </div>
-                        <p className="text-sm text-gray-300">Senkronize video</p>
-                        <p className="text-xs text-gray-500 mt-1">Dudak hareketleri ses ile eşleştirildi</p>
-                        <div className="flex items-center gap-2 mt-4 justify-center">
-                          <Button size="sm" className="bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs">
-                            İndir
-                          </Button>
-                          <Button size="sm" variant="outline" className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
-                            Paylaş
-                          </Button>
-                        </div>
-                      </div>
+                  ) : result.state === 'success' && result.resultUrls?.length ? (
+                    <div className="w-full h-full flex items-center justify-center bg-black/30">
+                      <video src={result.resultUrls[0]} className="max-w-full max-h-full" controls autoPlay loop />
+                    </div>
+                  ) : result.state === 'fail' ? (
+                    <div className="text-center p-8">
+                      <p className="text-sm text-red-400">{result.failMsg}</p>
+                      <Button size="sm" variant="outline" onClick={reset} className="mt-3 border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
+                        Tekrar Dene
+                      </Button>
                     </div>
                   ) : (
                     <div className="text-center p-8">

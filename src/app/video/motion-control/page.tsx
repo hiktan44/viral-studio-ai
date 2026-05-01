@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Upload,
   Sparkles,
@@ -40,8 +41,10 @@ export default function MotionControlPage() {
   const [selectedMotions, setSelectedMotions] = useState<string[]>([]);
   const [prompt, setPrompt] = useState('');
   const [regionalMask, setRegionalMask] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
 
   const handleImageDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -68,10 +71,37 @@ export default function MotionControlPage() {
 
   const handleGenerate = async () => {
     if (!imageFile || selectedMotions.length === 0) return;
-    setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setResult('generated');
-    setIsGenerating(false);
+
+    // Upload image first
+    const formData = new FormData();
+    formData.append('file', imageFile);
+    const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+    const uploadData = await uploadRes.json();
+    if (!uploadData.url) return;
+
+    const motionDescription = selectedMotions
+      .map((id) => MOTION_VECTORS.find((m) => m.id === id)?.label)
+      .filter(Boolean)
+      .join(', ');
+
+    const fullPrompt = [
+      prompt.trim() || `Kamera hareketi: ${motionDescription}`,
+      regionalMask ? 'Bölgesel maske uygulanacak' : '',
+    ].filter(Boolean).join('. ');
+
+    start({
+      endpoint: '/api/generate/video',
+      body: {
+        provider: 'seedance',
+        prompt: fullPrompt,
+        image_urls: [uploadData.url],
+      },
+      taskType: 'market',
+    });
+  };
+
+  const handleReset = () => {
+    reset();
   };
 
   return (
@@ -265,7 +295,7 @@ export default function MotionControlPage() {
 
               {/* Generate */}
               <Button
-                onClick={handleGenerate}
+                onClick={isGenerating ? undefined : result.state !== 'idle' ? handleReset : handleGenerate}
                 disabled={!imageFile || selectedMotions.length === 0 || isGenerating}
                 className="w-full h-12 bg-[#00FF88] hover:bg-[#00DD77] text-black font-semibold text-sm rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -273,6 +303,11 @@ export default function MotionControlPage() {
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                     Oluşturuluyor...
+                  </>
+                ) : result.state !== 'idle' ? (
+                  <>
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    Yeni Hareket Uygula
                   </>
                 ) : (
                   <>
@@ -292,7 +327,7 @@ export default function MotionControlPage() {
                     <Move className="w-4 h-4 text-purple-400" />
                     Sonuç
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
@@ -311,25 +346,21 @@ export default function MotionControlPage() {
                         <p className="text-xs text-gray-600 mt-1">Vektörler hesaplanıyor...</p>
                       </div>
                     </div>
-                  ) : result ? (
-                    <div className="w-full h-full bg-gradient-to-br from-purple-500/20 via-[#141414] to-[#00FF88]/10 flex items-center justify-center">
-                      <div className="text-center">
-                        <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mx-auto mb-3">
-                          <Move className="w-8 h-8 text-white" />
-                        </div>
-                        <p className="text-sm text-gray-300">Video önizleme</p>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {selectedMotions.length} hareket vektörü uygulandı
-                        </p>
-                        <div className="flex items-center gap-2 mt-4 justify-center">
-                          <Button size="sm" className="bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs">
-                            İndir
-                          </Button>
-                          <Button size="sm" variant="outline" className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
-                            Ayarla
-                          </Button>
-                        </div>
+                  ) : result.state === 'success' && result.resultUrls?.length ? (
+                    <div className="w-full h-full flex items-center justify-center p-4">
+                      <video
+                        src={result.resultUrls[0]}
+                        controls
+                        className="w-full h-full rounded-lg object-contain"
+                      />
+                    </div>
+                  ) : result.state === 'fail' ? (
+                    <div className="text-center p-8">
+                      <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-3">
+                        <span className="text-red-400 text-xl">!</span>
                       </div>
+                      <p className="text-sm text-red-400">Oluşturma başarısız</p>
+                      <p className="text-xs text-gray-600 mt-1">{result.failMsg}</p>
                     </div>
                   ) : (
                     <div className="text-center p-8">

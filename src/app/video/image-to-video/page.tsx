@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Slider } from '@/components/ui/slider';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Upload,
   Sparkles,
@@ -20,9 +21,9 @@ import {
 } from 'lucide-react';
 
 const MODELS = [
-  { value: 'seedance-2.0', label: 'Seedance 2.0', credits: 5 },
-  { value: 'wan', label: 'Wan 2.1', credits: 4 },
-  { value: 'kling', label: 'Kling 2.0', credits: 6 },
+  { value: 'seedance-2.0', label: 'Seedance 2.0', credits: 5, provider: 'seedance' as const },
+  { value: 'wan', label: 'Wan 2.1', credits: 4, provider: 'seedance' as const },
+  { value: 'kling', label: 'Kling 2.0', credits: 6, provider: 'kling' as const },
 ];
 
 const DURATIONS = [
@@ -37,8 +38,10 @@ export default function ImageToVideoPage() {
   const [model, setModel] = useState('seedance-2.0');
   const [motionDensity, setMotionDensity] = useState([50]);
   const [duration, setDuration] = useState('5');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
 
   const handleImageDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -59,11 +62,31 @@ export default function ImageToVideoPage() {
 
   const handleGenerate = async () => {
     if (!imageFile || !prompt.trim()) return;
-    setIsGenerating(true);
-    // Simulate generation
-    await new Promise((r) => setTimeout(r, 3000));
-    setResult('generated');
-    setIsGenerating(false);
+
+    // 1. Upload image first
+    const formData = new FormData();
+    formData.append('file', imageFile);
+    const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+    const uploadData = await uploadRes.json();
+    if (!uploadData.url) return;
+
+    const selectedModel = MODELS.find((m) => m.value === model);
+    const provider = selectedModel?.provider ?? 'seedance';
+
+    start({
+      endpoint: '/api/generate/video',
+      body: {
+        provider,
+        prompt: `${prompt} (hareket yoğunluğu: ${motionDensity[0]}%)`,
+        image_urls: [uploadData.url],
+        duration: Number(duration),
+      },
+      taskType: 'market',
+    });
+  };
+
+  const handleReset = () => {
+    reset();
   };
 
   const selectedModel = MODELS.find((m) => m.value === model);
@@ -212,7 +235,7 @@ export default function ImageToVideoPage() {
 
               {/* Generate Button */}
               <Button
-                onClick={handleGenerate}
+                onClick={isGenerating ? undefined : result.state !== 'idle' ? handleReset : handleGenerate}
                 disabled={!imageFile || !prompt.trim() || isGenerating}
                 className="w-full h-12 bg-[#00FF88] hover:bg-[#00DD77] text-black font-semibold text-sm rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -220,6 +243,11 @@ export default function ImageToVideoPage() {
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                     Oluşturuluyor...
+                  </>
+                ) : result.state !== 'idle' ? (
+                  <>
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    Yeni Video Oluştur
                   </>
                 ) : (
                   <>
@@ -241,7 +269,7 @@ export default function ImageToVideoPage() {
                     <Video className="w-4 h-4 text-purple-400" />
                     Sonuç
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
@@ -260,22 +288,21 @@ export default function ImageToVideoPage() {
                         <p className="text-xs text-gray-600 mt-1">Tahmini 30-60 saniye</p>
                       </div>
                     </div>
-                  ) : result ? (
-                    <div className="w-full h-full bg-gradient-to-br from-purple-500/20 via-[#141414] to-[#00FF88]/10 flex items-center justify-center">
-                      <div className="text-center">
-                        <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mx-auto mb-3">
-                          <Video className="w-8 h-8 text-white" />
-                        </div>
-                        <p className="text-sm text-gray-300">Video önizleme</p>
-                        <div className="flex items-center gap-2 mt-4 justify-center">
-                          <Button size="sm" className="bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs">
-                            İndir
-                          </Button>
-                          <Button size="sm" variant="outline" className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
-                            Paylaş
-                          </Button>
-                        </div>
+                  ) : result.state === 'success' && result.resultUrls?.length ? (
+                    <div className="w-full h-full flex items-center justify-center p-4">
+                      <video
+                        src={result.resultUrls[0]}
+                        controls
+                        className="w-full h-full rounded-lg object-contain"
+                      />
+                    </div>
+                  ) : result.state === 'fail' ? (
+                    <div className="text-center p-8">
+                      <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-3">
+                        <span className="text-red-400 text-xl">!</span>
                       </div>
+                      <p className="text-sm text-red-400">Oluşturma başarısız</p>
+                      <p className="text-xs text-gray-600 mt-1">{result.failMsg}</p>
                     </div>
                   ) : (
                     <div className="text-center">

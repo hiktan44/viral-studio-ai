@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { TopBar } from '@/components/layout/TopBar';
 import { useAppStore, type Project } from '@/store';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -123,9 +124,12 @@ export default function AgentPage() {
 
   const removeFile = (idx: number) => setFiles((prev) => prev.filter((_, i) => i !== idx));
 
+  /* ---- polling hook for video generation ---- */
+  const videoPolling = useTaskPolling();
+
   /* ---- generate ---- */
-  const handleGenerate = () => {
-    if (isGenerating || credits < 15) return;
+  const handleGenerate = async () => {
+    if (isGenerating || credits < 15 || !prompt.trim()) return;
     setIsGenerating(true);
     deductCredits(15);
 
@@ -137,11 +141,62 @@ export default function AgentPage() {
       thumbnail: '',
       clips: [],
       assets: [],
-      messages: [],
+      messages: [
+        {
+          id: `msg-${Date.now()}`,
+          role: 'user',
+          content: prompt.trim(),
+          timestamp: new Date(),
+        },
+      ],
     };
     addProject(proj);
-    setIsGenerating(false);
-    router.push(`/agent/${proj.id}`);
+
+    try {
+      // 1. Call agent chat to get a scene plan
+      const chatRes = await fetch('/api/agent/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: prompt.trim() }),
+      });
+      const chatData = await chatRes.json();
+
+      if (!chatData.success) {
+        throw new Error(chatData.error || 'Agent yaniti alinamadi');
+      }
+
+      // Parse scene plans from the agent response
+      let scenes: Array<{ title: string; description: string; duration?: number; timestamp?: string }> = [];
+      try {
+        scenes = JSON.parse(chatData.response);
+      } catch {
+        // If response isn't JSON, treat it as a single scene description
+        scenes = [{ title: 'Scene 1', description: chatData.response, duration: 5 }];
+      }
+
+      // 2. Start video generation for each scene
+      for (const scene of scenes) {
+        const videoBody: Record<string, unknown> = {
+          provider: 'seedance',
+          prompt: scene.description || scene.title,
+          duration: scene.duration || 5,
+          aspectRatio,
+          resolution,
+        };
+
+        videoPolling.start({
+          endpoint: '/api/generate/video',
+          body: videoBody,
+          taskType: 'video',
+          onError: (msg) => console.error('Video generation error:', msg),
+        });
+      }
+    } catch (err) {
+      console.error('Generate error:', err);
+    } finally {
+      setIsGenerating(false);
+      router.push(`/agent/${proj.id}`);
+    }
   };
 
   /* ---- start empty ---- */
@@ -346,13 +401,13 @@ export default function AgentPage() {
               {/* generate */}
               <Button
                 onClick={handleGenerate}
-                disabled={isGenerating || credits < 15}
+                disabled={isGenerating || credits < 15 || videoPolling.result.state === 'generating'}
                 className="bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium h-8 px-4 rounded-lg transition-colors"
               >
-                {isGenerating ? (
+                {isGenerating || videoPolling.result.state === 'waiting' || videoPolling.result.state === 'queuing' || videoPolling.result.state === 'generating' ? (
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Generating...
+                    {videoPolling.result.state === 'generating' ? 'Uretiliyor...' : 'Baslatiliyor...'}
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5">

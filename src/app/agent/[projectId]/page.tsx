@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore, type Project, type ChatMessage, type ScenePlan, type Clip } from '@/store';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -103,14 +104,19 @@ export default function AgentEditorPage() {
   /* ---- chat state ---- */
   const [chatInput, setChatInput] = useState('');
   const [selectedStyle, setSelectedStyle] = useState<(typeof STYLE_OPTIONS)[number]>('Auto');
+  const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  /* ---- polling hook for video generation ---- */
+  const videoPolling = useTaskPolling();
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [project?.messages.length]);
 
-  const sendMessage = () => {
-    if (!chatInput.trim() || !project) return;
+  const sendMessage = async () => {
+    if (!chatInput.trim() || !project || chatLoading) return;
+
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       role: 'user',
@@ -118,36 +124,101 @@ export default function AgentEditorPage() {
       timestamp: new Date(),
     };
     addMessageToProject(project.id, userMsg);
+    const currentPrompt = chatInput.trim();
     setChatInput('');
+    setChatLoading(true);
 
-    // simulate agent response
-    setTimeout(() => {
+    try {
+      const chatRes = await fetch('/api/agent/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: currentPrompt, context: project.messages.slice(-6).map(m => ({ role: m.role, content: m.content })) }),
+      });
+      const chatData = await chatRes.json();
+
+      if (!chatData.success) {
+        throw new Error(chatData.error || 'Agent yaniti alinamadi');
+      }
+
+      // Parse scene plans from the agent response
+      let scenes: ScenePlan[] = [];
+      let agentContent = chatData.response;
+
+      try {
+        const parsed = JSON.parse(chatData.response);
+        if (Array.isArray(parsed)) {
+          scenes = parsed.map((s: Record<string, unknown>, i: number) => ({
+            id: `sc-${Date.now()}-${i}`,
+            title: (s.title as string) || `Scene ${i + 1}`,
+            description: (s.description as string) || (s.prompt as string) || '',
+            duration: (s.duration as number) || 5,
+            assetRefs: (s.assetRefs as string[]) || [],
+            timestamp: (s.timestamp as string) || `[${i * 5}-${(i + 1) * 5}s]`,
+          }));
+          agentContent = "Here's the scene plan I've prepared for you:";
+        }
+      } catch {
+        // Response isn't a JSON array, display as plain text
+      }
+
       const agentMsg: ChatMessage = {
         id: `msg-${Date.now() + 1}`,
         role: 'agent',
-        content: "Here's the scene plan I've prepared for you:",
+        content: agentContent,
         timestamp: new Date(),
-        scenes: [
-          {
-            id: `sc-${Date.now()}`,
-            title: 'Opening Shot',
-            description: 'Cinematic wide shot establishing the scene with dynamic lighting',
-            duration: 5,
-            assetRefs: [],
-            timestamp: '[0-5s]',
-          },
-          {
-            id: `sc-${Date.now() + 1}`,
-            title: 'Detail Shot',
-            description: 'Close-up focusing on key details with shallow depth of field',
-            duration: 5,
-            assetRefs: [],
-            timestamp: '[5-10s]',
-          },
-        ],
+        scenes: scenes.length > 0 ? scenes : undefined,
       };
-      if (project) addMessageToProject(project.id, agentMsg);
-    }, 1000);
+      addMessageToProject(project.id, agentMsg);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Bir hata olustu';
+      const errorMsg: ChatMessage = {
+        id: `msg-${Date.now() + 1}`,
+        role: 'agent',
+        content: `Hata: ${errMsg}. Lutfen tekrar deneyin.`,
+        timestamp: new Date(),
+      };
+      addMessageToProject(project.id, errorMsg);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  /* ---- generate video from scene ---- */
+  const handleGenerateSceneVideo = (scene: ScenePlan) => {
+    if (!project) return;
+    deductCredits(15);
+
+    const clip: Clip = {
+      id: `clip-${Date.now()}`,
+      prompt: scene.description,
+      thumbnail: '',
+      duration: scene.duration,
+      status: 'generating',
+      assetRefs: scene.assetRefs,
+    };
+    addClipToProject(project.id, clip);
+
+    videoPolling.start({
+      endpoint: '/api/generate/video',
+      body: {
+        provider: 'seedance',
+        prompt: scene.description,
+        duration: scene.duration,
+        aspectRatio,
+      },
+      taskType: 'video',
+      onSuccess: (urls) => {
+        if (project) {
+          updateClipStatus(project.id, clip.id, 'completed', urls[0] || '');
+        }
+      },
+      onError: (msg) => {
+        console.error('Video generation failed:', msg);
+        if (project) {
+          updateClipStatus(project.id, clip.id, 'failed');
+        }
+      },
+    });
   };
 
   /* ---- playback state ---- */
@@ -216,10 +287,26 @@ export default function AgentEditorPage() {
       assetRefs: [],
     };
     addClipToProject(project.id, clip);
-    setTimeout(() => {
-      updateClipStatus(project.id, clip.id, 'completed', '');
-      setIsGenerating(false);
-    }, 2000);
+
+    videoPolling.start({
+      endpoint: '/api/generate/video',
+      body: {
+        provider: 'seedance',
+        prompt: clip.prompt,
+        duration: clip.duration,
+        aspectRatio,
+      },
+      taskType: 'video',
+      onSuccess: (urls) => {
+        if (project) updateClipStatus(project.id, clip.id, 'completed', urls[0] || '');
+        setIsGenerating(false);
+      },
+      onError: (msg) => {
+        console.error('Video generation failed:', msg);
+        if (project) updateClipStatus(project.id, clip.id, 'failed');
+        setIsGenerating(false);
+      },
+    });
   };
 
   /* ---- handle no project ---- */
@@ -379,10 +466,28 @@ export default function AgentEditorPage() {
                                 </div>
                               )}
                               <div className="flex gap-1.5 pt-1">
-                                <button className="text-[10px] bg-[#1E1E1E] border border-[#2A2A2A] rounded-md px-2 py-1 text-gray-400 hover:text-white hover:border-[#3A3A3A] transition-colors">
+                                <button
+                                  onClick={() => {
+                                    if (!project) return;
+                                    const clip: Clip = {
+                                      id: `clip-${Date.now()}`,
+                                      prompt: scene.description,
+                                      thumbnail: '',
+                                      duration: scene.duration,
+                                      status: 'pending',
+                                      assetRefs: scene.assetRefs,
+                                    };
+                                    addClipToProject(project.id, clip);
+                                  }}
+                                  className="text-[10px] bg-[#1E1E1E] border border-[#2A2A2A] rounded-md px-2 py-1 text-gray-400 hover:text-white hover:border-[#3A3A3A] transition-colors"
+                                >
                                   Yalnzca Ekle
                                 </button>
-                                <button className="text-[10px] bg-purple-600/20 border border-purple-500/30 rounded-md px-2 py-1 text-purple-400 hover:bg-purple-600/30 transition-colors">
+                                <button
+                                  onClick={() => handleGenerateSceneVideo(scene)}
+                                  disabled={videoPolling.result.state === 'waiting' || videoPolling.result.state === 'generating'}
+                                  className="text-[10px] bg-purple-600/20 border border-purple-500/30 rounded-md px-2 py-1 text-purple-400 hover:bg-purple-600/30 transition-colors disabled:opacity-40"
+                                >
                                   Ekle ve Uret
                                 </button>
                               </div>
@@ -401,6 +506,22 @@ export default function AgentEditorPage() {
                 )}
               </div>
             ))}
+
+            {/* agent typing indicator */}
+            {chatLoading && (
+              <div className="flex gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-purple-500 to-purple-700 flex items-center justify-center shrink-0 mt-0.5">
+                  <Sparkles className="w-3.5 h-3.5 text-white" />
+                </div>
+                <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg px-3 py-2">
+                  <div className="flex gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
             <div ref={chatEndRef} />
           </div>
 
@@ -439,7 +560,7 @@ export default function AgentEditorPage() {
 
               <button
                 onClick={sendMessage}
-                disabled={!chatInput.trim()}
+                disabled={!chatInput.trim() || chatLoading}
                 className="p-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <Send className="w-3.5 h-3.5" />

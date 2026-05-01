@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore, type StoryFrame, type Board } from '@/store';
+import { useTaskPolling, type TaskState } from '@/lib/kie/useTaskPolling';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -147,6 +148,41 @@ export default function BoardEditorPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  /* ---- video generation polling ---- */
+  const videoPolling = useTaskPolling();
+
+  const handleGenerateVideo = () => {
+    if (frames.length === 0) return;
+    deductCredits(frames.length * 0.8);
+
+    // Build a combined storyboard prompt from all frames
+    const storyboardPrompt = frames
+      .map((f, i) => `Frame ${i + 1} (${f.cameraMotion}, ${f.duration}s): ${f.prompt}`)
+      .join('\n');
+
+    videoPolling.start({
+      endpoint: '/api/generate/video',
+      body: {
+        provider: 'seedance',
+        prompt: storyboardPrompt,
+        duration: frames.reduce((a, f) => a + f.duration, 0),
+        aspectRatio,
+        frames: frames.map((f) => ({
+          prompt: f.prompt,
+          duration: f.duration,
+          cameraMotion: f.cameraMotion,
+        })),
+      },
+      taskType: 'video',
+      onSuccess: (urls) => {
+        console.log('Video generated:', urls);
+      },
+      onError: (msg) => {
+        console.error('Video generation failed:', msg);
+      },
+    });
+  };
 
   /* ---- load board ---- */
   useEffect(() => {
@@ -599,6 +635,7 @@ export default function BoardEditorPage() {
                 dragOverIndex={dragOverIndex}
                 isGenerating={isGenerating}
                 allFramesCompleted={allFramesCompleted}
+                videoPollingState={videoPolling.result.state}
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
@@ -606,6 +643,7 @@ export default function BoardEditorPage() {
                 onUpdateFrame={updateFrame}
                 onDeleteFrame={deleteFrame}
                 onRegenerateFrame={regenerateFrame}
+                onGenerateVideo={handleGenerateVideo}
                 onAddFrame={() => {
                   const f: StoryFrame = {
                     id: `frame-${Date.now()}`,
@@ -746,6 +784,7 @@ function BoardPanel({
   dragOverIndex,
   isGenerating,
   allFramesCompleted,
+  videoPollingState,
   onDragStart,
   onDragOver,
   onDrop,
@@ -753,6 +792,7 @@ function BoardPanel({
   onUpdateFrame,
   onDeleteFrame,
   onRegenerateFrame,
+  onGenerateVideo,
   onAddFrame,
 }: {
   frames: StoryFrame[];
@@ -760,6 +800,7 @@ function BoardPanel({
   dragOverIndex: number | null;
   isGenerating: boolean;
   allFramesCompleted: boolean;
+  videoPollingState: TaskState;
   onDragStart: (i: number) => void;
   onDragOver: (e: React.DragEvent, i: number) => void;
   onDrop: (i: number) => void;
@@ -767,6 +808,7 @@ function BoardPanel({
   onUpdateFrame: (id: string, updates: Partial<StoryFrame>) => void;
   onDeleteFrame: (id: string) => void;
   onRegenerateFrame: (id: string) => void;
+  onGenerateVideo: () => void;
   onAddFrame: () => void;
 }) {
   if (frames.length === 0 && !isGenerating) {
@@ -959,12 +1001,55 @@ function BoardPanel({
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mt-6 flex justify-center"
+          className="mt-6 flex flex-col items-center gap-3"
         >
-          <Button className="h-12 px-8 text-sm font-semibold rounded-xl bg-[#00FF88] hover:bg-[#00E67A] text-black shadow-[0_0_20px_rgba(0,255,136,0.15)] hover:shadow-[0_0_30px_rgba(0,255,136,0.25)] transition-all">
-            <Clapperboard className="w-4 h-4 mr-2" />
-            Video Uret
-          </Button>
+          {videoPollingState === 'waiting' || videoPollingState === 'queuing' || videoPollingState === 'generating' ? (
+            <div className="flex flex-col items-center gap-2">
+              <Button
+                disabled
+                className="h-12 px-8 text-sm font-semibold rounded-xl bg-[#1E1E1E] text-gray-400 cursor-wait"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  {videoPollingState === 'generating' ? 'Video Uretiliyor...' : 'Kuyruktan alindi...'}
+                </span>
+              </Button>
+              <p className="text-xs text-gray-500">
+                Bu islem bir kac dakika surebilir
+              </p>
+            </div>
+          ) : videoPollingState === 'success' ? (
+            <div className="flex flex-col items-center gap-2">
+              <Button className="h-12 px-8 text-sm font-semibold rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black">
+                <Play className="w-4 h-4 mr-2" />
+                Videoyu Goruntule
+              </Button>
+              <p className="text-xs text-emerald-400">
+                Video basariyla olusturuldu!
+              </p>
+            </div>
+          ) : videoPollingState === 'fail' ? (
+            <div className="flex flex-col items-center gap-2">
+              <Button
+                onClick={onGenerateVideo}
+                className="h-12 px-8 text-sm font-semibold rounded-xl bg-red-500/20 border border-red-500/40 hover:bg-red-500/30 text-red-400"
+              >
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Tekrar Dene
+              </Button>
+              <p className="text-xs text-red-400">
+                Video olusturulamadi. Tekrar deneyin.
+              </p>
+            </div>
+          ) : (
+            <Button
+              onClick={onGenerateVideo}
+              className="h-12 px-8 text-sm font-semibold rounded-xl bg-[#00FF88] hover:bg-[#00E67A] text-black shadow-[0_0_20px_rgba(0,255,136,0.15)] hover:shadow-[0_0_30px_rgba(0,255,136,0.25)] transition-all"
+            >
+              <Clapperboard className="w-4 h-4 mr-2" />
+              Video Uret
+            </Button>
+          )}
         </motion.div>
       )}
     </div>

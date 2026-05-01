@@ -3,6 +3,7 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -27,24 +28,48 @@ export default function FaceSwapPage() {
   const [faceIndex, setFaceIndex] = useState(1);
   const [blendStrength, setBlendStrength] = useState(80);
   const [enhanceResult, setEnhanceResult] = useState(true);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [targetFile, setTargetFile] = useState<File | null>(null);
   const sourceInputRef = useRef<HTMLInputElement>(null);
   const targetInputRef = useRef<HTMLInputElement>(null);
+  const { result, start, reset } = useTaskPolling();
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
+
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!data.url) throw new Error('Upload failed');
+    return data.url;
+  };
 
   const handleSourceFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setSourceImage(URL.createObjectURL(file));
+    if (file) {
+      setSourceImage(URL.createObjectURL(file));
+      setSourceFile(file);
+    }
   };
 
   const handleTargetFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setTargetImage(URL.createObjectURL(file));
+    if (file) {
+      setTargetImage(URL.createObjectURL(file));
+      setTargetFile(file);
+    }
   };
 
-  const handleGenerate = () => {
-    if (!sourceImage || !targetImage) return;
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 3000);
+  const handleGenerate = async () => {
+    if (!sourceFile || !targetFile) return;
+    const [sourceUrl, targetUrl] = await Promise.all([uploadFile(sourceFile), uploadFile(targetFile)]);
+    start({
+      endpoint: '/api/generate/image',
+      body: { provider: 'gpt', prompt: 'face swap', filesUrl: [sourceUrl, targetUrl], strength: blendStrength / 100 },
+      taskType: 'gpt-image',
+      onSuccess: () => reset(),
+      onError: (msg) => console.error('Face swap failed:', msg),
+    });
   };
 
   return (
@@ -294,11 +319,15 @@ export default function FaceSwapPage() {
                     </div>
                   </div>
 
-                  {/* Result Placeholder */}
+                  {/* Result */}
                   <div className="rounded-xl border border-[#2A2A2A] overflow-hidden">
-                    <div className="w-full aspect-square bg-gradient-to-br from-purple-600/40 to-emerald-600/40 flex items-center justify-center">
-                      <ScanFace className="w-8 h-8 text-white/40" />
-                    </div>
+                    {result.state === 'success' && result.resultUrls?.[0] ? (
+                      <img src={result.resultUrls[0]} alt="Sonu&ccedil;" className="w-full aspect-square object-cover" />
+                    ) : (
+                      <div className="w-full aspect-square bg-gradient-to-br from-purple-600/40 to-emerald-600/40 flex items-center justify-center">
+                        <ScanFace className="w-8 h-8 text-white/40" />
+                      </div>
+                    )}
                     <div className="p-2 border-t border-[#2A2A2A]">
                       <Badge className="bg-[#00FF88]/20 text-emerald-300 text-[10px] border-0 w-full justify-center">
                         Sonu&ccedil;

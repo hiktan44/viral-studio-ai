@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Sparkles,
   Loader2,
@@ -18,6 +19,7 @@ import {
   Palette,
   Zap,
   Check,
+  Upload,
 } from 'lucide-react';
 
 const AVATARS = Array.from({ length: 12 }, (_, i) => ({
@@ -84,15 +86,51 @@ export default function AiAvatarPage() {
   const [background, setBackground] = useState('gradient-1');
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [language, setLanguage] = useState('tr');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'waiting' || result.state === 'queuing' || result.state === 'generating';
+
+  const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
+      reset();
+    }
+  }, [reset]);
+
+  const handleImageDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      setImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
+      reset();
+    }
+  }, [reset]);
 
   const handleGenerate = async () => {
-    if (!script.trim()) return;
-    setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setResult('generated');
-    setIsGenerating(false);
+    if (!script.trim() || !imageFile) return;
+
+    // 1. Upload image
+    const formData = new FormData();
+    formData.append('file', imageFile);
+    const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+    const uploadData = await uploadRes.json();
+    if (!uploadData.url) return;
+
+    // 2. Start avatar generation
+    start({
+      endpoint: '/api/generate/avatar',
+      body: {
+        type: 'avatar',
+        prompt: script,
+        image_url: uploadData.url,
+      },
+      taskType: 'market',
+    });
   };
 
   return (
@@ -133,6 +171,43 @@ export default function AiAvatarPage() {
                       </span>
                     </button>
                   ))}
+                </div>
+              </Card>
+
+              {/* Image Upload */}
+              <Card className="bg-[#141414] border-[#2A2A2A] p-5">
+                <label className="text-sm font-medium text-gray-300 mb-3 block flex items-center gap-2">
+                  <ImageIcon className="w-4 h-4 text-purple-400" />
+                  Avatar Fotoğrafı
+                </label>
+                <div
+                  onDrop={handleImageDrop}
+                  onDragOver={(e) => e.preventDefault()}
+                  className={cn(
+                    'relative border-2 border-dashed rounded-xl transition-all duration-200 cursor-pointer group',
+                    imagePreview
+                      ? 'border-purple-500/40 bg-purple-500/5'
+                      : 'border-[#2A2A2A] hover:border-purple-500/50 hover:bg-[#1E1E1E]'
+                  )}
+                >
+                  {imagePreview ? (
+                    <div className="relative p-3">
+                      <img src={imagePreview} alt="Avatar" className="w-full h-32 object-cover rounded-lg" />
+                      <button
+                        onClick={() => { setImageFile(null); setImagePreview(null); reset(); }}
+                        className="absolute top-5 right-5 p-1.5 bg-black/60 rounded-full text-white hover:bg-black/80 transition-colors text-xs"
+                      >
+                        Kaldır
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex flex-col items-center justify-center h-28 cursor-pointer">
+                      <Upload className="w-6 h-6 text-gray-500 group-hover:text-purple-400 mb-2 transition-colors" />
+                      <p className="text-sm text-gray-400 mb-0.5">Fotoğraf sürükleyin</p>
+                      <p className="text-xs text-gray-600">PNG, JPG, WebP</p>
+                      <input type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
+                    </label>
+                  )}
                 </div>
               </Card>
 
@@ -250,7 +325,7 @@ export default function AiAvatarPage() {
               {/* Generate */}
               <Button
                 onClick={handleGenerate}
-                disabled={!script.trim() || isGenerating}
+                disabled={!script.trim() || !imageFile || isGenerating}
                 className="w-full h-12 bg-[#00FF88] hover:bg-[#00DD77] text-black font-semibold text-sm rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {isGenerating ? (
@@ -276,10 +351,16 @@ export default function AiAvatarPage() {
                     <User className="w-4 h-4 text-purple-400" />
                     Sonuç
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
+                    </span>
+                  )}
+                  {result.state === 'fail' && (
+                    <span className="text-xs text-red-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                      Hata
                     </span>
                   )}
                 </div>
@@ -302,25 +383,16 @@ export default function AiAvatarPage() {
                         <p className="text-xs text-gray-600 mt-1">Dudak senkronizasyonu yapılıyor...</p>
                       </div>
                     </div>
-                  ) : result ? (
-                    <div className="w-full h-full bg-gradient-to-br from-purple-500/20 via-[#141414] to-[#00FF88]/10 flex items-center justify-center">
-                      <div className="text-center">
-                        <div className="w-20 h-20 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 mx-auto mb-3 flex items-center justify-center">
-                          <User className="w-10 h-10 text-white" />
-                        </div>
-                        <p className="text-sm text-gray-300">Avatar video önizleme</p>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {AVATARS.find((a) => a.id === selectedAvatar)?.name} — {aspectRatio}
-                        </p>
-                        <div className="flex items-center gap-2 mt-4 justify-center">
-                          <Button size="sm" className="bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs">
-                            İndir
-                          </Button>
-                          <Button size="sm" variant="outline" className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
-                            Düzenle
-                          </Button>
-                        </div>
-                      </div>
+                  ) : result.state === 'success' && result.resultUrls?.length ? (
+                    <div className="w-full h-full flex items-center justify-center bg-black/30">
+                      <video src={result.resultUrls[0]} className="max-w-full max-h-full" controls autoPlay loop />
+                    </div>
+                  ) : result.state === 'fail' ? (
+                    <div className="text-center p-8">
+                      <p className="text-sm text-red-400">{result.failMsg}</p>
+                      <Button size="sm" variant="outline" onClick={reset} className="mt-3 border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
+                        Tekrar Dene
+                      </Button>
                     </div>
                   ) : (
                     <div className="text-center p-8">

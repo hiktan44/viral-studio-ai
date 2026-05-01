@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Upload,
   Sparkles,
@@ -18,23 +19,25 @@ import {
 } from 'lucide-react';
 
 const SCALE_OPTIONS = [
-  { value: '2x', label: '2x', desc: 'Çözünürlüğü ikiye katla', credits: 3 },
-  { value: '4x', label: '4x', desc: 'Çözünürlüğü dörde katla', credits: 6 },
+  { value: '2', label: '2x', desc: 'Çözünürlüğü ikiye katla', credits: 3 },
+  { value: '4', label: '4x', desc: 'Çözünürlüğü dörde katla', credits: 6 },
 ];
 
 export default function VideoUpscalePage() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreview, setVideoPreview] = useState<string | null>(null);
-  const [scale, setScale] = useState('2x');
+  const [scale, setScale] = useState('2');
   const [fpsIncrease, setFpsIncrease] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
 
   const handleVideoDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (file && file.type.startsWith('video/')) {
-      if (file.size > 100 * 1024 * 1024) return; // 100MB limit
+      if (file.size > 100 * 1024 * 1024) return;
       setVideoFile(file);
       setVideoPreview(URL.createObjectURL(file));
     }
@@ -51,10 +54,26 @@ export default function VideoUpscalePage() {
 
   const handleGenerate = async () => {
     if (!videoFile) return;
-    setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setResult('generated');
-    setIsGenerating(false);
+
+    // Upload video first
+    const formData = new FormData();
+    formData.append('file', videoFile);
+    const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+    const uploadData = await uploadRes.json();
+    if (!uploadData.url) return;
+
+    start({
+      endpoint: '/api/generate/upscale',
+      body: {
+        image_url: uploadData.url,
+        upscale_factor: Number(scale),
+      },
+      taskType: 'market',
+    });
+  };
+
+  const handleReset = () => {
+    reset();
   };
 
   const selectedScale = SCALE_OPTIONS.find((s) => s.value === scale);
@@ -192,7 +211,7 @@ export default function VideoUpscalePage() {
 
               {/* Generate */}
               <Button
-                onClick={handleGenerate}
+                onClick={isGenerating ? undefined : result.state !== 'idle' ? handleReset : handleGenerate}
                 disabled={!videoFile || isGenerating}
                 className="w-full h-12 bg-[#00FF88] hover:bg-[#00DD77] text-black font-semibold text-sm rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -200,6 +219,11 @@ export default function VideoUpscalePage() {
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                     İşleniyor...
+                  </>
+                ) : result.state !== 'idle' ? (
+                  <>
+                    <ArrowUpFromLine className="w-4 h-4 mr-2" />
+                    Yeni Video Büyüt
                   </>
                 ) : (
                   <>
@@ -215,14 +239,13 @@ export default function VideoUpscalePage() {
 
             {/* Right: Result */}
             <div className="space-y-6">
-              {/* Before / After comparison placeholder */}
               <Card className="bg-[#141414] border-[#2A2A2A] p-5">
                 <div className="flex items-center justify-between mb-4">
                   <label className="text-sm font-medium text-gray-300 flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-purple-400" />
                     Sonuç
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
@@ -240,40 +263,51 @@ export default function VideoUpscalePage() {
                       <div className="text-center">
                         <p className="text-sm text-gray-300">Video büyütülüyor</p>
                         <p className="text-xs text-gray-600 mt-1">
-                          {scale} ölçekleme{fpsIncrease ? ' + FPS artırma' : ''} uygulanıyor
+                          {scale}x ölçekleme{fpsIncrease ? ' + FPS artırma' : ''} uygulanıyor
                         </p>
                       </div>
                     </div>
                   </div>
-                ) : result ? (
+                ) : result.state === 'success' && result.resultUrls?.length ? (
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <p className="text-xs text-gray-500 mb-2 text-center">Önce</p>
-                        <div className="aspect-video rounded-lg bg-gradient-to-br from-[#1E1E1E] to-[#2A2A2A] flex items-center justify-center border border-[#2A2A2A]">
-                          <div className="text-center">
-                            <Video className="w-6 h-6 text-gray-600 mx-auto mb-1" />
-                            <p className="text-[10px] text-gray-600">Orijinal</p>
-                          </div>
-                        </div>
+                        {videoPreview && (
+                          <video
+                            src={videoPreview}
+                            className="aspect-video rounded-lg object-cover border border-[#2A2A2A]"
+                            muted
+                          />
+                        )}
                       </div>
                       <div>
-                        <p className="text-xs text-purple-400 mb-2 text-center">Sonra ({scale})</p>
-                        <div className="aspect-video rounded-lg bg-gradient-to-br from-purple-500/20 to-[#00FF88]/10 flex items-center justify-center border border-purple-500/30">
-                          <div className="text-center">
-                            <Sparkles className="w-6 h-6 text-purple-400 mx-auto mb-1" />
-                            <p className="text-[10px] text-purple-300">Yüksek Çözünürlük</p>
-                          </div>
-                        </div>
+                        <p className="text-xs text-purple-400 mb-2 text-center">Sonra ({scale}x)</p>
+                        <video
+                          src={result.resultUrls[0]}
+                          controls
+                          className="aspect-video rounded-lg object-cover border border-purple-500/30"
+                        />
                       </div>
                     </div>
                     <div className="flex items-center justify-center gap-3">
-                      <Button size="sm" className="bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs">
+                      <Button
+                        size="sm"
+                        className="bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs"
+                        onClick={() => window.open(result.resultUrls![0], '_blank')}
+                      >
                         İndir
                       </Button>
-                      <Button size="sm" variant="outline" className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
-                        Karşılaştır
-                      </Button>
+                    </div>
+                  </div>
+                ) : result.state === 'fail' ? (
+                  <div className="aspect-video rounded-xl bg-[#1E1E1E] flex items-center justify-center">
+                    <div className="text-center p-8">
+                      <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-3">
+                        <span className="text-red-400 text-xl">!</span>
+                      </div>
+                      <p className="text-sm text-red-400">İşlem başarısız</p>
+                      <p className="text-xs text-gray-600 mt-1">{result.failMsg}</p>
                     </div>
                   </div>
                 ) : (

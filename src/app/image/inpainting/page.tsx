@@ -3,6 +3,7 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -25,9 +26,20 @@ export default function InpaintingPage() {
   const [fillPrompt, setFillPrompt] = useState('');
   const [brushSize, setBrushSize] = useState(20);
   const [sensitivity, setSensitivity] = useState(50);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [activeTool, setActiveTool] = useState<'brush' | 'eraser'>('brush');
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { result, start, reset } = useTaskPolling();
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
+
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!data.url) throw new Error('Upload failed');
+    return data.url;
+  };
 
   const handleUpload = () => {
     fileInputRef.current?.click();
@@ -38,13 +50,20 @@ export default function InpaintingPage() {
     if (file) {
       const url = URL.createObjectURL(file);
       setUploadedImage(url);
+      setUploadedFile(file);
     }
   };
 
-  const handleGenerate = () => {
-    if (!uploadedImage || !fillPrompt.trim()) return;
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 3000);
+  const handleGenerate = async () => {
+    if (!uploadedFile || !fillPrompt.trim()) return;
+    const fileUrl = await uploadFile(uploadedFile);
+    start({
+      endpoint: '/api/generate/image',
+      body: { provider: 'gpt', prompt: fillPrompt, filesUrl: [fileUrl], sensitivity },
+      taskType: 'gpt-image',
+      onSuccess: () => reset(),
+      onError: (msg) => console.error('Inpainting failed:', msg),
+    });
   };
 
   return (
@@ -243,6 +262,10 @@ export default function InpaintingPage() {
                     Maske alan&#x131; dolduruluyor...
                   </span>
                 </div>
+              </div>
+            ) : result.state === 'success' && result.resultUrls?.[0] ? (
+              <div className="rounded-xl border border-[#2A2A2A] overflow-hidden">
+                <img src={result.resultUrls[0]} alt="Sonu&ccedil;" className="w-full aspect-video object-contain" />
               </div>
             ) : uploadedImage ? (
               <div className="space-y-4">

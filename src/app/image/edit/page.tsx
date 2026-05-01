@@ -3,6 +3,7 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -22,9 +23,20 @@ export default function ImageEditPage() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [editPrompt, setEditPrompt] = useState('');
   const [strength, setStrength] = useState(70);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [sliderPosition, setSliderPosition] = useState(50);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { result, start, reset } = useTaskPolling();
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
+
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!data.url) throw new Error('Upload failed');
+    return data.url;
+  };
 
   const handleUpload = () => {
     fileInputRef.current?.click();
@@ -35,13 +47,20 @@ export default function ImageEditPage() {
     if (file) {
       const url = URL.createObjectURL(file);
       setUploadedImage(url);
+      setUploadedFile(file);
     }
   };
 
-  const handleGenerate = () => {
-    if (!uploadedImage || !editPrompt.trim()) return;
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 3000);
+  const handleGenerate = async () => {
+    if (!uploadedFile || !editPrompt.trim()) return;
+    const fileUrl = await uploadFile(uploadedFile);
+    start({
+      endpoint: '/api/generate/image',
+      body: { provider: 'gpt', prompt: editPrompt, filesUrl: [fileUrl], strength: strength / 100 },
+      taskType: 'gpt-image',
+      onSuccess: () => reset(),
+      onError: (msg) => console.error('Edit failed:', msg),
+    });
   };
 
   return (
@@ -204,16 +223,20 @@ export default function ImageEditPage() {
                       </div>
                     </div>
 
-                    {/* After (simulated) */}
+                    {/* After (result) */}
                     <div
                       className="absolute inset-0"
                       style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }}
                     >
-                      <div className="w-full h-full bg-gradient-to-br from-purple-600/40 to-blue-600/40 flex items-center justify-center">
-                        <Badge className="bg-black/60 backdrop-blur-sm text-white text-[10px] border-0">
-                          Sonra
-                        </Badge>
-                      </div>
+                      {result.state === 'success' && result.resultUrls?.[0] ? (
+                        <img src={result.resultUrls[0]} alt="Sonu&ccedil;" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-purple-600/40 to-blue-600/40 flex items-center justify-center">
+                          <Badge className="bg-black/60 backdrop-blur-sm text-white text-[10px] border-0">
+                            Sonra
+                          </Badge>
+                        </div>
+                      )}
                     </div>
 
                     {/* Slider Line */}

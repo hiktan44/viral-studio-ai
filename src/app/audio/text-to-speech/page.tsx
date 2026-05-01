@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Sparkles,
   Loader2,
@@ -72,9 +73,10 @@ export default function TextToSpeechPage() {
   const [speed, setSpeed] = useState([1.0]);
   const [pitch, setPitch] = useState([1.0]);
   const [pauseSetting, setPauseSetting] = useState('natural');
-  const [isGenerating, setIsGenerating] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'waiting' || result.state === 'queuing' || result.state === 'generating';
 
   const filteredVoices = VOICES.filter((v) => {
     if (genderFilter !== 'all' && v.gender !== genderFilter) return false;
@@ -84,10 +86,21 @@ export default function TextToSpeechPage() {
 
   const handleGenerate = async () => {
     if (!text.trim()) return;
-    setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 2500));
-    setResult('generated');
-    setIsGenerating(false);
+
+    const voiceObj = VOICES.find(v => v.id === selectedVoice);
+    const languageCode = voiceObj?.language || 'tr';
+
+    start({
+      endpoint: '/api/generate/tts',
+      body: {
+        text,
+        voice: selectedVoice,
+        speed: speed[0],
+        similarity_boost: pitch[0],
+        language_code: languageCode,
+      },
+      taskType: 'market',
+    });
   };
 
   const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
@@ -303,10 +316,16 @@ export default function TextToSpeechPage() {
                     <Volume2 className="w-4 h-4 text-purple-400" />
                     Sonuç
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
+                    </span>
+                  )}
+                  {result.state === 'fail' && (
+                    <span className="text-xs text-red-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                      Hata
                     </span>
                   )}
                 </div>
@@ -324,9 +343,9 @@ export default function TextToSpeechPage() {
                       </div>
                     </div>
                   </div>
-                ) : result ? (
+                ) : result.state === 'success' && result.resultUrls?.length ? (
                   <div className="space-y-4">
-                    {/* Audio Waveform Placeholder */}
+                    {/* Audio Waveform */}
                     <div className="h-24 rounded-xl bg-gradient-to-r from-purple-500/20 via-[#1E1E1E] to-purple-500/20 flex items-center justify-center border border-[#2A2A2A]">
                       <div className="flex items-center gap-[3px]">
                         {Array.from({ length: 40 }, (_, i) => (
@@ -354,25 +373,19 @@ export default function TextToSpeechPage() {
                         )}
                       </button>
                       <div className="flex-1">
-                        <div className="w-full h-1.5 bg-[#2A2A2A] rounded-full overflow-hidden">
-                          <div className="h-full w-1/3 bg-gradient-to-r from-purple-500 to-purple-400 rounded-full" />
-                        </div>
-                        <div className="flex justify-between mt-1">
-                          <span className="text-[10px] text-gray-600">0:00</span>
-                          <span className="text-[10px] text-gray-600">
-                            {wordCount > 0 ? `~${Math.ceil(wordCount / 2.5)}s` : '0:00'}
-                          </span>
-                        </div>
+                        <audio src={result.resultUrls[0]} className="w-full h-8" controls />
                       </div>
                       <div className="flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg h-8"
-                        >
-                          <Download className="w-3 h-3 mr-1" />
-                          <span className="text-xs">MP3</span>
-                        </Button>
+                        <a href={result.resultUrls[0]} download>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg h-8"
+                          >
+                            <Download className="w-3 h-3 mr-1" />
+                            <span className="text-xs">MP3</span>
+                          </Button>
+                        </a>
                       </div>
                     </div>
 
@@ -392,6 +405,15 @@ export default function TextToSpeechPage() {
                         <p className="text-[10px] text-gray-500">Perde</p>
                         <p className="text-xs text-white mt-0.5">{pitch[0].toFixed(1)}</p>
                       </div>
+                    </div>
+                  </div>
+                ) : result.state === 'fail' ? (
+                  <div className="h-48 rounded-xl bg-[#1E1E1E] flex items-center justify-center">
+                    <div className="text-center p-8">
+                      <p className="text-sm text-red-400">{result.failMsg}</p>
+                      <Button size="sm" variant="outline" onClick={reset} className="mt-3 border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
+                        Tekrar Dene
+                      </Button>
                     </div>
                   </div>
                 ) : (

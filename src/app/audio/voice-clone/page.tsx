@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Upload,
   Sparkles,
@@ -26,11 +27,13 @@ export default function VoiceClonePage() {
   const [audioPreview, setAudioPreview] = useState<string | null>(null);
   const [isCloning, setIsCloning] = useState(false);
   const [isCloned, setIsCloned] = useState(false);
+  const [clonedAudioUrl, setClonedAudioUrl] = useState<string | null>(null);
   const [newText, setNewText] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
   const [isPlayingSource, setIsPlayingSource] = useState(false);
   const [isPlayingResult, setIsPlayingResult] = useState(false);
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'waiting' || result.state === 'queuing' || result.state === 'generating';
 
   const handleAudioDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -39,9 +42,10 @@ export default function VoiceClonePage() {
       setAudioFile(file);
       setAudioPreview(URL.createObjectURL(file));
       setIsCloned(false);
-      setResult(null);
+      setClonedAudioUrl(null);
+      reset();
     }
-  }, []);
+  }, [reset]);
 
   const handleAudioSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -49,24 +53,40 @@ export default function VoiceClonePage() {
       setAudioFile(file);
       setAudioPreview(URL.createObjectURL(file));
       setIsCloned(false);
-      setResult(null);
+      setClonedAudioUrl(null);
+      reset();
     }
-  }, []);
+  }, [reset]);
 
   const handleClone = async () => {
     if (!audioFile) return;
     setIsCloning(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setIsCloned(true);
-    setIsCloning(false);
+    try {
+      const formData = new FormData();
+      formData.append('file', audioFile);
+      const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+      const uploadData = await uploadRes.json();
+      if (uploadData.url) {
+        setClonedAudioUrl(uploadData.url);
+        setIsCloned(true);
+      }
+    } finally {
+      setIsCloning(false);
+    }
   };
 
   const handleGenerate = async () => {
-    if (!newText.trim() || !isCloned) return;
-    setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setResult('generated');
-    setIsGenerating(false);
+    if (!newText.trim() || !isCloned || !clonedAudioUrl) return;
+
+    start({
+      endpoint: '/api/generate/tts',
+      body: {
+        text: newText,
+        voice: clonedAudioUrl,
+        language_code: 'tr',
+      },
+      taskType: 'market',
+    });
   };
 
   const formatFileSize = (bytes: number) => {
@@ -142,7 +162,8 @@ export default function VoiceClonePage() {
                             setAudioFile(null);
                             setAudioPreview(null);
                             setIsCloned(false);
-                            setResult(null);
+                            setClonedAudioUrl(null);
+                            reset();
                           }}
                           className="p-1.5 bg-black/60 rounded-full text-white hover:bg-black/80 transition-colors text-xs"
                         >
@@ -273,10 +294,16 @@ export default function VoiceClonePage() {
                     <Sparkles className="w-4 h-4 text-purple-400" />
                     Klonlanmış Ses Sonucu
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
+                    </span>
+                  )}
+                  {result.state === 'fail' && (
+                    <span className="text-xs text-red-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                      Hata
                     </span>
                   )}
                 </div>
@@ -294,7 +321,7 @@ export default function VoiceClonePage() {
                       </div>
                     </div>
                   </div>
-                ) : result ? (
+                ) : result.state === 'success' && result.resultUrls?.length ? (
                   <div className="space-y-4">
                     {/* Cloned Audio Waveform */}
                     <div className="h-24 rounded-xl bg-gradient-to-r from-purple-500/20 via-[#1E1E1E] to-[#00FF88]/10 flex items-center justify-center border border-[#2A2A2A]">
@@ -322,22 +349,18 @@ export default function VoiceClonePage() {
                         )}
                       </button>
                       <div className="flex-1">
-                        <div className="w-full h-1.5 bg-[#2A2A2A] rounded-full overflow-hidden">
-                          <div className="h-full w-0 bg-gradient-to-r from-[#00FF88] to-[#00DD77] rounded-full animate-pulse" style={{ width: '0%' }} />
-                        </div>
-                        <div className="flex justify-between mt-1">
-                          <span className="text-[10px] text-gray-600">0:00</span>
-                          <span className="text-[10px] text-gray-600">~{Math.ceil(newText.length / 10)}s</span>
-                        </div>
+                        <audio src={result.resultUrls[0]} className="w-full h-8" controls />
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg h-8"
-                      >
-                        <Download className="w-3 h-3 mr-1" />
-                        <span className="text-xs">MP3</span>
-                      </Button>
+                      <a href={result.resultUrls[0]} download>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg h-8"
+                        >
+                          <Download className="w-3 h-3 mr-1" />
+                          <span className="text-xs">MP3</span>
+                        </Button>
+                      </a>
                     </div>
 
                     {/* Info */}
@@ -350,6 +373,15 @@ export default function VoiceClonePage() {
                         <p className="text-[10px] text-gray-500">Kullanılan Metin</p>
                         <p className="text-xs text-white mt-0.5 truncate">{newText.slice(0, 30)}...</p>
                       </div>
+                    </div>
+                  </div>
+                ) : result.state === 'fail' ? (
+                  <div className="h-48 rounded-xl bg-[#1E1E1E] flex items-center justify-center">
+                    <div className="text-center p-8">
+                      <p className="text-sm text-red-400">{result.failMsg}</p>
+                      <Button size="sm" variant="outline" onClick={reset} className="mt-3 border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
+                        Tekrar Dene
+                      </Button>
                     </div>
                   </div>
                 ) : (

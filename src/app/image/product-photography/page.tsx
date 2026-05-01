@@ -3,6 +3,7 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -76,18 +77,39 @@ export default function ProductPhotographyPage() {
   const [multiAngle, setMultiAngle] = useState(false);
   const [angleCount, setAngleCount] = useState(3);
   const [removeBg, setRemoveBg] = useState(true);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { result, start, reset } = useTaskPolling();
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
+
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!data.url) throw new Error('Upload failed');
+    return data.url;
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setProductImage(URL.createObjectURL(file));
+    if (file) {
+      setProductImage(URL.createObjectURL(file));
+      setUploadedFile(file);
+    }
   };
 
-  const handleGenerate = () => {
-    if (!productImage) return;
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 3000);
+  const handleGenerate = async () => {
+    if (!uploadedFile) return;
+    const fileUrl = await uploadFile(uploadedFile);
+    const sceneDesc = customPrompt || `${selectedScene} scene product photography`;
+    start({
+      endpoint: '/api/generate/image',
+      body: { provider: 'gpt', prompt: sceneDesc, filesUrl: [fileUrl] },
+      taskType: 'gpt-image',
+      onSuccess: () => reset(),
+      onError: (msg) => console.error('Product photography failed:', msg),
+    });
   };
 
   const sceneColors = [
@@ -323,9 +345,32 @@ export default function ProductPhotographyPage() {
                   </motion.div>
                 ))}
               </div>
+            ) : result.state === 'success' && result.resultUrls ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  {result.resultUrls.map((url: string, i: number) => (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.08 }}
+                      className="rounded-xl border border-[#2A2A2A] overflow-hidden group cursor-pointer hover:border-purple-500/40 transition-all"
+                    >
+                      <div className="aspect-square relative">
+                        <img src={url} alt={`Sonu&ccedil; ${i + 1}`} className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 z-20">
+                          <Button size="sm" variant="secondary" className="text-xs bg-[#1E1E1E]/80 backdrop-blur-sm" onClick={() => window.open(url, '_blank')}>
+                            B&uuml;y&uuml;t
+                          </Button>
+                          <a href={url} download className="text-xs bg-[#1E1E1E]/80 backdrop-blur-sm px-3 py-1.5 rounded-md text-white hover:bg-[#2A2A2A]">&#x130;ndir</a>
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              </div>
             ) : productImage ? (
               <div className="space-y-4">
-                {/* Main result grid */}
                 <div
                   className={cn(
                     'grid gap-4',
@@ -348,13 +393,11 @@ export default function ProductPhotographyPage() {
                           sceneColors[i % sceneColors.length]
                         )}
                       >
-                        {/* Product overlay */}
                         <img
                           src={productImage}
                           alt={`Sonu&ccedil; ${i + 1}`}
                           className="w-1/2 h-1/2 object-contain relative z-10 drop-shadow-lg"
                         />
-                        {/* Hover actions */}
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 z-20">
                           <Button size="sm" variant="secondary" className="text-xs bg-[#1E1E1E]/80 backdrop-blur-sm">
                             B&uuml;y&uuml;t
@@ -363,7 +406,6 @@ export default function ProductPhotographyPage() {
                             &#x130;ndir
                           </Button>
                         </div>
-                        {/* Angle label */}
                         {multiAngle && (
                           <div className="absolute bottom-2 left-2 z-20">
                             <Badge className="bg-black/60 backdrop-blur-sm text-white text-[10px] border-0">

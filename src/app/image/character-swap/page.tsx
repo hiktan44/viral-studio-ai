@@ -3,6 +3,7 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -34,8 +35,19 @@ export default function CharacterSwapPage() {
   const [blendStrength, setBlendStrength] = useState(75);
   const [preservePose, setPreservePose] = useState(true);
   const [swapPrompt, setSwapPrompt] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
   const sourceInputRef = useRef<HTMLInputElement>(null);
+  const { result, start, reset } = useTaskPolling();
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
+
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!data.url) throw new Error('Upload failed');
+    return data.url;
+  };
 
   const handleSourceUpload = () => sourceInputRef.current?.click();
 
@@ -43,13 +55,20 @@ export default function CharacterSwapPage() {
     const file = e.target.files?.[0];
     if (file) {
       setSourceImage(URL.createObjectURL(file));
+      setSourceFile(file);
     }
   };
 
-  const handleGenerate = () => {
-    if (!sourceImage) return;
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 3000);
+  const handleGenerate = async () => {
+    if (!sourceFile) return;
+    const fileUrl = await uploadFile(sourceFile);
+    start({
+      endpoint: '/api/generate/image',
+      body: { provider: 'gpt', prompt: swapPrompt || `${selectedStyle} style character`, style: selectedStyle, filesUrl: [fileUrl], strength: blendStrength / 100 },
+      taskType: 'gpt-image',
+      onSuccess: () => reset(),
+      onError: (msg) => console.error('Character swap failed:', msg),
+    });
   };
 
   return (
@@ -245,21 +264,25 @@ export default function CharacterSwapPage() {
                   </div>
                 </div>
 
-                {/* Result Placeholder */}
+                {/* Result */}
                 <div className="rounded-xl border border-[#2A2A2A] overflow-hidden">
-                  <div
-                    className={cn(
-                      'aspect-square bg-gradient-to-br flex items-center justify-center',
-                      STYLE_PRESETS.find((s) => s.id === selectedStyle)?.gradient
-                    )}
-                  >
-                    <div className="text-center">
-                      <Users className="w-10 h-10 text-white/40 mx-auto mb-2" />
-                      <p className="text-xs text-white/60">
-                        {STYLE_PRESETS.find((s) => s.id === selectedStyle)?.label} stilinde
-                      </p>
+                  {result.state === 'success' && result.resultUrls?.[0] ? (
+                    <img src={result.resultUrls[0]} alt="Sonu&ccedil;" className="aspect-square w-full object-cover" />
+                  ) : (
+                    <div
+                      className={cn(
+                        'aspect-square bg-gradient-to-br flex items-center justify-center',
+                        STYLE_PRESETS.find((s) => s.id === selectedStyle)?.gradient
+                      )}
+                    >
+                      <div className="text-center">
+                        <Users className="w-10 h-10 text-white/40 mx-auto mb-2" />
+                        <p className="text-xs text-white/60">
+                          {STYLE_PRESETS.find((s) => s.id === selectedStyle)?.label} stilinde
+                        </p>
+                      </div>
                     </div>
-                  </div>
+                  )}
                   <div className="p-3 border-t border-[#2A2A2A] flex items-center justify-between">
                     <Badge className="bg-purple-500/20 text-purple-300 text-[10px] border-0">
                       {STYLE_PRESETS.find((s) => s.id === selectedStyle)?.label}

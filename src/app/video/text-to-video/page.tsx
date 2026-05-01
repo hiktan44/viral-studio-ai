@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Sparkles,
   Video,
@@ -59,15 +60,30 @@ export default function TextToVideoPage() {
   const [style, setStyle] = useState('cinematic');
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [duration, setDuration] = useState('5');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
-    setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setResult('generated');
-    setIsGenerating(false);
+
+    const enrichedPrompt = `${prompt}. Kamera: ${CAMERA_MOTIONS.find((m) => m.value === cameraMotion)?.label}. Stil: ${STYLES.find((s) => s.value === style)?.label}.`;
+
+    start({
+      endpoint: '/api/generate/video',
+      body: {
+        provider: 'seedance',
+        prompt: enrichedPrompt,
+        duration: Number(duration),
+        aspectRatio,
+      },
+      taskType: 'market',
+    });
+  };
+
+  const handleReset = () => {
+    reset();
   };
 
   const creditCost = DURATIONS.find((d) => d.value === duration)?.credits || 5;
@@ -196,7 +212,7 @@ export default function TextToVideoPage() {
 
               {/* Generate Button */}
               <Button
-                onClick={handleGenerate}
+                onClick={isGenerating ? undefined : result.state !== 'idle' ? handleReset : handleGenerate}
                 disabled={!prompt.trim() || isGenerating}
                 className="w-full h-12 bg-[#00FF88] hover:bg-[#00DD77] text-black font-semibold text-sm rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -204,6 +220,11 @@ export default function TextToVideoPage() {
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                     Oluşturuluyor...
+                  </>
+                ) : result.state !== 'idle' ? (
+                  <>
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    Yeni Video Oluştur
                   </>
                 ) : (
                   <>
@@ -225,7 +246,7 @@ export default function TextToVideoPage() {
                     <Clapperboard className="w-4 h-4 text-purple-400" />
                     Sonuç
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
@@ -252,25 +273,21 @@ export default function TextToVideoPage() {
                         <p className="text-xs text-gray-600 mt-1">Bu işlem 1-2 dakika sürebilir</p>
                       </div>
                     </div>
-                  ) : result ? (
-                    <div className="w-full h-full bg-gradient-to-br from-purple-500/20 via-[#141414] to-[#00FF88]/10 flex items-center justify-center">
-                      <div className="text-center">
-                        <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mx-auto mb-3">
-                          <Video className="w-8 h-8 text-white" />
-                        </div>
-                        <p className="text-sm text-gray-300">Video önizleme</p>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {aspectRatio} — {duration}s — {style}
-                        </p>
-                        <div className="flex items-center gap-2 mt-4 justify-center">
-                          <Button size="sm" className="bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs">
-                            İndir
-                          </Button>
-                          <Button size="sm" variant="outline" className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
-                            Düzenle
-                          </Button>
-                        </div>
+                  ) : result.state === 'success' && result.resultUrls?.length ? (
+                    <div className="w-full h-full flex items-center justify-center p-4">
+                      <video
+                        src={result.resultUrls[0]}
+                        controls
+                        className="w-full h-full rounded-lg object-contain"
+                      />
+                    </div>
+                  ) : result.state === 'fail' ? (
+                    <div className="text-center p-8">
+                      <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-3">
+                        <span className="text-red-400 text-xl">!</span>
                       </div>
+                      <p className="text-sm text-red-400">Oluşturma başarısız</p>
+                      <p className="text-xs text-gray-600 mt-1">{result.failMsg}</p>
                     </div>
                   ) : (
                     <div className="text-center p-8">
@@ -287,7 +304,7 @@ export default function TextToVideoPage() {
               </Card>
 
               {/* Preview Info */}
-              {result && (
+              {result.state === 'success' && (
                 <Card className="bg-[#141414] border-[#2A2A2A] p-4">
                   <div className="grid grid-cols-4 gap-4 text-center">
                     <div>

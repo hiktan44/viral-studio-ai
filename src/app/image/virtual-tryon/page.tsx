@@ -3,6 +3,7 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -26,24 +27,48 @@ export default function VirtualTryOnPage() {
   const [fitAdjust, setFitAdjust] = useState(70);
   const [preserveBackground, setPreserveBackground] = useState(true);
   const [autoAlign, setAutoAlign] = useState(true);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [modelFile, setModelFile] = useState<File | null>(null);
+  const [productFile, setProductFile] = useState<File | null>(null);
   const modelInputRef = useRef<HTMLInputElement>(null);
   const productInputRef = useRef<HTMLInputElement>(null);
+  const { result, start, reset } = useTaskPolling();
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
+
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!data.url) throw new Error('Upload failed');
+    return data.url;
+  };
 
   const handleModelFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setModelImage(URL.createObjectURL(file));
+    if (file) {
+      setModelImage(URL.createObjectURL(file));
+      setModelFile(file);
+    }
   };
 
   const handleProductFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setProductImage(URL.createObjectURL(file));
+    if (file) {
+      setProductImage(URL.createObjectURL(file));
+      setProductFile(file);
+    }
   };
 
-  const handleGenerate = () => {
-    if (!modelImage || !productImage) return;
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 3000);
+  const handleGenerate = async () => {
+    if (!modelFile || !productFile) return;
+    const [modelUrl, productUrl] = await Promise.all([uploadFile(modelFile), uploadFile(productFile)]);
+    start({
+      endpoint: '/api/generate/image',
+      body: { provider: 'gpt', prompt: 'virtual try-on', filesUrl: [modelUrl, productUrl] },
+      taskType: 'gpt-image',
+      onSuccess: () => reset(),
+      onError: (msg) => console.error('Virtual try-on failed:', msg),
+    });
   };
 
   return (
@@ -258,20 +283,26 @@ export default function VirtualTryOnPage() {
                 {/* Preview Area */}
                 <div className="rounded-xl border border-[#2A2A2A] overflow-hidden">
                   <div className="aspect-[3/4] relative">
-                    <img
-                      src={modelImage}
-                      alt="Model"
-                      className="w-full h-full object-cover"
-                    />
-                    {/* Product overlay placeholder */}
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-48 h-48 rounded-xl bg-gradient-to-br from-emerald-600/30 to-blue-600/30 border border-white/10 backdrop-blur-sm flex items-center justify-center">
-                        <div className="text-center">
-                          <Shirt className="w-8 h-8 text-white/40 mx-auto mb-1" />
-                          <p className="text-[10px] text-white/50">&Uuml;r&uuml;n</p>
+                    {result.state === 'success' && result.resultUrls?.[0] ? (
+                      <img src={result.resultUrls[0]} alt="Sonu&ccedil;" className="w-full h-full object-cover" />
+                    ) : (
+                      <>
+                        <img
+                          src={modelImage}
+                          alt="Model"
+                          className="w-full h-full object-cover"
+                        />
+                        {/* Product overlay placeholder */}
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-48 h-48 rounded-xl bg-gradient-to-br from-emerald-600/30 to-blue-600/30 border border-white/10 backdrop-blur-sm flex items-center justify-center">
+                            <div className="text-center">
+                              <Shirt className="w-8 h-8 text-white/40 mx-auto mb-1" />
+                              <p className="text-[10px] text-white/50">&Uuml;r&uuml;n</p>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
+                      </>
+                    )}
                     <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between">
                       <Badge className="bg-black/60 backdrop-blur-sm text-white text-[10px] border-0">
                         Otomatik Hizalama

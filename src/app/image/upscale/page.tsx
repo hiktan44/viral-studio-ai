@@ -3,6 +3,7 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -29,21 +30,41 @@ export default function UpscalePage() {
   const [scale, setScale] = useState(2);
   const [sharpening, setSharpening] = useState(true);
   const [denoise, setDenoise] = useState(true);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [sliderPosition, setSliderPosition] = useState(50);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { result, start, reset } = useTaskPolling();
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
+
+  const uploadFile = async (file: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!data.url) throw new Error('Upload failed');
+    return data.url;
+  };
 
   const handleUpload = () => fileInputRef.current?.click();
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) setUploadedImage(URL.createObjectURL(file));
+    if (file) {
+      setUploadedImage(URL.createObjectURL(file));
+      setUploadedFile(file);
+    }
   };
 
-  const handleGenerate = () => {
-    if (!uploadedImage) return;
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 3000);
+  const handleGenerate = async () => {
+    if (!uploadedFile) return;
+    const imageUrl = await uploadFile(uploadedFile);
+    start({
+      endpoint: '/api/generate/upscale',
+      body: { image_url: imageUrl, upscale_factor: scale },
+      taskType: 'gpt-image',
+      onSuccess: () => reset(),
+      onError: (msg) => console.error('Upscale failed:', msg),
+    });
   };
 
   const selectedScale = SCALE_OPTIONS.find((s) => s.value === scale);
@@ -245,17 +266,21 @@ export default function UpscalePage() {
                       </div>
                     </div>
 
-                    {/* After (upscaled placeholder) */}
+                    {/* After (upscaled result) */}
                     <div
                       className="absolute inset-0"
                       style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }}
                     >
-                      <div className="w-full h-full bg-gradient-to-br from-purple-600/30 to-emerald-600/30 flex items-center justify-center">
-                        <div className="text-center">
-                          <Maximize2 className="w-8 h-8 text-white/40 mx-auto mb-2" />
-                          <p className="text-xs text-white/60">{scale}x Y&uuml;kseltilmi&#x15F;</p>
+                      {result.state === 'success' && result.resultUrls?.[0] ? (
+                        <img src={result.resultUrls[0]} alt="B&uuml;y&uuml;t&uuml;lm&uuml;&#x15F;" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-purple-600/30 to-emerald-600/30 flex items-center justify-center">
+                          <div className="text-center">
+                            <Maximize2 className="w-8 h-8 text-white/40 mx-auto mb-2" />
+                            <p className="text-xs text-white/60">{scale}x Y&uuml;kseltilmi&#x15F;</p>
+                          </div>
                         </div>
-                      </div>
+                      )}
                       <div className="absolute top-3 right-3">
                         <Badge className="bg-[#00FF88]/20 text-emerald-300 text-[10px] border-0">
                           {scale}x

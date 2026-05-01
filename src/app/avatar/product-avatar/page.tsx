@@ -5,6 +5,7 @@ import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import {
   Upload,
   Sparkles,
@@ -45,8 +46,9 @@ export default function ProductAvatarPage() {
   const [productImage, setProductImage] = useState<File | null>(null);
   const [productPreview, setProductPreview] = useState<string | null>(null);
   const [selectedTemplate, setSelectedTemplate] = useState('template-1');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+  const { result, start, reset } = useTaskPolling();
+
+  const isGenerating = result.state === 'waiting' || result.state === 'queuing' || result.state === 'generating';
 
   const handleImageDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -54,23 +56,41 @@ export default function ProductAvatarPage() {
     if (file && file.type.startsWith('image/')) {
       setProductImage(file);
       setProductPreview(URL.createObjectURL(file));
+      reset();
     }
-  }, []);
+  }, [reset]);
 
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setProductImage(file);
       setProductPreview(URL.createObjectURL(file));
+      reset();
     }
-  }, []);
+  }, [reset]);
 
   const handleGenerate = async () => {
     if (!productImage) return;
-    setIsGenerating(true);
-    await new Promise((r) => setTimeout(r, 3000));
-    setResult('generated');
-    setIsGenerating(false);
+
+    const templateName = TEMPLATES.find(t => t.id === selectedTemplate)?.name || 'Ürün Tanıtım';
+
+    // 1. Upload product image
+    const formData = new FormData();
+    formData.append('file', productImage);
+    const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+    const uploadData = await uploadRes.json();
+    if (!uploadData.url) return;
+
+    // 2. Start product avatar generation
+    start({
+      endpoint: '/api/generate/avatar',
+      body: {
+        type: 'avatar',
+        prompt: `Create a product showcase video using the ${templateName} template style`,
+        image_url: uploadData.url,
+      },
+      taskType: 'market',
+    });
   };
 
   return (
@@ -105,6 +125,7 @@ export default function ProductAvatarPage() {
                         onClick={() => {
                           setProductImage(null);
                           setProductPreview(null);
+                          reset();
                         }}
                         className="absolute top-6 right-6 p-1.5 bg-black/60 rounded-full text-white hover:bg-black/80 transition-colors text-xs"
                       >
@@ -190,10 +211,16 @@ export default function ProductAvatarPage() {
                     <Sparkles className="w-4 h-4 text-purple-400" />
                     Sonuç
                   </label>
-                  {result && (
+                  {result.state === 'success' && (
                     <span className="text-xs text-[#00FF88] flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#00FF88]" />
                       Hazır
+                    </span>
+                  )}
+                  {result.state === 'fail' && (
+                    <span className="text-xs text-red-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                      Hata
                     </span>
                   )}
                 </div>
@@ -209,25 +236,16 @@ export default function ProductAvatarPage() {
                         <p className="text-xs text-gray-600 mt-1">Arka plan kaldırılıyor...</p>
                       </div>
                     </div>
-                  ) : result ? (
-                    <div className="w-full h-full bg-gradient-to-br from-purple-500/20 via-[#141414] to-[#00FF88]/10 flex items-center justify-center">
-                      <div className="text-center p-6">
-                        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-purple-500 to-pink-500 mx-auto mb-3 flex items-center justify-center">
-                          <Package className="w-10 h-10 text-white" />
-                        </div>
-                        <p className="text-sm text-gray-300">Ürün video önizleme</p>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {TEMPLATES.find((t) => t.id === selectedTemplate)?.name} şablonu
-                        </p>
-                        <div className="flex items-center gap-2 mt-4 justify-center">
-                          <Button size="sm" className="bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs">
-                            İndir
-                          </Button>
-                          <Button size="sm" variant="outline" className="border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
-                            Paylaş
-                          </Button>
-                        </div>
-                      </div>
+                  ) : result.state === 'success' && result.resultUrls?.length ? (
+                    <div className="w-full h-full flex items-center justify-center bg-black/30">
+                      <video src={result.resultUrls[0]} className="max-w-full max-h-full" controls autoPlay loop />
+                    </div>
+                  ) : result.state === 'fail' ? (
+                    <div className="text-center p-8">
+                      <p className="text-sm text-red-400">{result.failMsg}</p>
+                      <Button size="sm" variant="outline" onClick={reset} className="mt-3 border-[#2A2A2A] text-gray-300 hover:text-white rounded-lg text-xs">
+                        Tekrar Dene
+                      </Button>
                     </div>
                   ) : (
                     <div className="text-center p-8">

@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useTaskPolling } from '@/lib/kie/useTaskPolling';
 import { TopBar } from '@/components/layout/TopBar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -46,15 +47,24 @@ export default function TextToImagePage() {
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [steps, setSteps] = useState(30);
   const [batchCount, setBatchCount] = useState(1);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const { result, start, reset } = useTaskPolling();
+  const isGenerating = result.state === 'generating' || result.state === 'waiting' || result.state === 'queuing';
 
   const selectedModel = MODELS.find((m) => m.value === model);
   const totalCredits = (selectedModel?.credits ?? 5) * batchCount;
 
   const handleGenerate = () => {
     if (!prompt.trim()) return;
-    setIsGenerating(true);
-    setTimeout(() => setIsGenerating(false), 3000);
+    const provider = model === 'flux' ? 'flux' : 'gpt';
+    const ar = ASPECT_RATIOS.find((a) => a.value === aspectRatio);
+    const size = ar ? `${ar.w * 1024}x${ar.h * 1024}` : '1024x1024';
+    start({
+      endpoint: '/api/generate/image',
+      body: { provider, prompt, negativePrompt: negativePrompt || undefined, size, num: batchCount },
+      taskType: provider === 'flux' ? 'flux' : 'gpt-image',
+      onSuccess: () => reset(),
+      onError: (msg) => console.error('Generation failed:', msg),
+    });
   };
 
   const getAspectStyle = (ratio: string) => {
@@ -262,15 +272,9 @@ export default function TextToImagePage() {
                   </motion.div>
                 ))}
               </div>
-            ) : (
+            ) : result.state === 'success' && result.resultUrls ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Placeholder generated images */}
-                {[
-                  'from-purple-600/40 to-blue-600/40',
-                  'from-emerald-600/40 to-cyan-600/40',
-                  'from-rose-600/40 to-orange-600/40',
-                  'from-indigo-600/40 to-violet-600/40',
-                ].map((gradient, i) => (
+                {result.resultUrls.map((url: string, i: number) => (
                   <motion.div
                     key={i}
                     initial={{ opacity: 0, y: 20 }}
@@ -279,25 +283,18 @@ export default function TextToImagePage() {
                     className="rounded-xl border border-[#2A2A2A] bg-[#141414] overflow-hidden group cursor-pointer hover:border-purple-500/40 transition-all"
                     style={getAspectStyle(aspectRatio)}
                   >
-                    <div
-                      className={cn(
-                        'w-full h-full bg-gradient-to-br flex items-center justify-center',
-                        gradient
-                      )}
-                    >
-                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2">
-                        <Button size="sm" variant="secondary" className="text-xs bg-[#1E1E1E]/80 backdrop-blur-sm">
-                          B&uuml;y&uuml;t
-                        </Button>
-                        <Button size="sm" variant="secondary" className="text-xs bg-[#1E1E1E]/80 backdrop-blur-sm">
-                          &#x130;ndir
-                        </Button>
-                      </div>
+                    <img src={url} alt={`Sonu&ccedil; ${i + 1}`} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 bg-black/40">
+                      <Button size="sm" variant="secondary" className="text-xs bg-[#1E1E1E]/80 backdrop-blur-sm" onClick={() => window.open(url, '_blank')}>
+                        B&uuml;y&uuml;t
+                      </Button>
+                      <a href={url} download className="text-xs bg-[#1E1E1E]/80 backdrop-blur-sm px-3 py-1.5 rounded-md text-white hover:bg-[#2A2A2A]">&#x130;ndir</a>
                     </div>
                   </motion.div>
                 ))}
-
-                {/* Empty slots */}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {Array.from({ length: 4 }).map((_, i) => (
                   <div
                     key={`empty-${i}`}
